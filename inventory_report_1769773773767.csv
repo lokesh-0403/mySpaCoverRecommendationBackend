@@ -1,0 +1,37 @@
+=== INVENTORY REPORT - SKU BREAKDOWN & COLOR CODING ===
+
+SKU FORMAT EXPLANATION:
+Example SKU: E4E4-55-M1-1104
+  - First Part (E4E4): Dimensions A & B
+    * E4 = 84 inches (First Dimension)
+    * E4 = 84 inches (Second Dimension)
+  - Second Part (55): Third Dimension (5 inches)
+  - Third Part (M1): Taper specification
+  - Fourth Part (1104): Material/Color code
+
+DIMENSION CODE CONVERSION:
+  X = 6 (e.g., X6 = 66 inches)
+  S = 7 (e.g., S7 = 77 inches)
+  E = 8 (e.g., E8 = 88 inches)
+  N = 9 (e.g., N9 = 99 inches)
+
+STATUS INDICATORS (shown in Excel with colors):
+  - 'instock' = Item currently available in warehouse (GREEN in Excel)
+  - 'inbound' = Item on the way, arriving soon (YELLOW in Excel)
+  - 'custom' = Not available, requires custom order (RED in Excel)
+
+COLOR CODES:
+  1104 = Oxford Grey
+  1244 = Brazilian Mahogany
+  1239 = Coffee Brown
+  3132 = Coastal Grey
+  3221 = Mahogany
+  3218 = Mayan Brown
+
+================================================================================
+
+DimA,DimB,DimC,1104 - Oxford Grey,1244 - Brazilian Mahogany,1239 - Coffee Brown,3132 - Coastal Grey,3221 - Mahogany,3218 - Mayan Brown
+91,91,5,instock N2N2-55-M1-1104,custom,instock N2N2-55-M1-1239,instock N2N2-55-M1-3132,instock N2N2-55-M1-3221,instock N0N0-55-M1-3218
+84,84,5,instock E4E4-55-M1-1104,instock E4E4-45-M1-1244,instock E4E4-45-M1-1239,instock E4E4-45-M1-3132,instock E4E4-55-M1-3221,instock E4E4-45-M1-3218
+77,78,2,instock S8S8-35-M1-1104,custom,instock S8S8-35-M1-1239,custom,custom,custom
+77,360,,instock S8-3605-M1-1104,custom,instock S8-3605-M1-1239,instock S8-3605-M1-3132,instock S8-3605-M1-3221,instock S8-3605-M1-3218
