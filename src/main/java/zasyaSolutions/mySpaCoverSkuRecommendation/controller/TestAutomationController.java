@@ -1,310 +1,162 @@
 package zasyaSolutions.mySpaCoverSkuRecommendation.controller;
 
+import java.io.IOException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.UrlResource;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import zasyaSolutions.mySpaCoverSkuRecommendation.service.TestExecutionService;
 
+import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 @RestController
 @RequestMapping("/api/tests")
-@CrossOrigin(origins = "*") // Configure this properly in production
 public class TestAutomationController {
 
+    private static final Logger log = LoggerFactory.getLogger(TestAutomationController.class);
+
+    private final TestExecutionService testExecutionService;
+
     @Autowired
-    private TestExecutionService testExecutionService;
-
-    /**
-     * Upload CSV file - replaces the target spa_cover_dimensions.csv file
-     * 
-     * Endpoint: POST /api/tests/upload
-     * Request: multipart/form-data with "file" parameter
-     * Response: { "fileId": "uuid", "fileName": "original-name.csv", "message": "..." }
-     */
-    @PostMapping("/upload")
-    public ResponseEntity<Map<String, String>> uploadFile(@RequestParam("file") MultipartFile file) {
-        Map<String, String> response = new HashMap<>();
-
-        try {
-            // Validate file
-            if (file.isEmpty()) {
-                response.put("error", "File is empty");
-                return ResponseEntity.badRequest().body(response);
-            }
-
-            // Validate CSV format
-            String originalFilename = file.getOriginalFilename();
-            if (originalFilename == null || !originalFilename.toLowerCase().endsWith(".csv")) {
-                response.put("error", "Only CSV files are allowed");
-                return ResponseEntity.badRequest().body(response);
-            }
-
-            // Replace the target CSV file
-            String fileId = testExecutionService.replaceTargetCsvFile(file);
-            
-            response.put("fileId", fileId);
-            response.put("fileName", originalFilename);
-            response.put("message", "CSV file uploaded and replaced successfully");
-            response.put("status", "success");
-
-            return ResponseEntity.ok(response);
-            
-        } catch (Exception e) {
-            response.put("error", e.getMessage());
-            response.put("status", "failed");
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
-        }
+    public TestAutomationController(TestExecutionService testExecutionService) {
+        this.testExecutionService = testExecutionService;
     }
 
     /**
-     * Execute TestNG tests
-     * 
-     * Endpoint: POST /api/tests/execute/{fileId}
-     * Response: { "status": "completed", "resultFilePath": "...", "fileId": "..." }
-     * 
-     * This endpoint runs the test synchronously and returns the Excel report path
+     * Upload a CSV file for later execution.
+     */
+    @PostMapping("/upload")
+    public ResponseEntity<Map<String, String>> uploadFile(@RequestParam("file") MultipartFile file) throws IOException {
+        String fileId = testExecutionService.storeUploadedCsv(file);
+
+        Map<String, String> response = new LinkedHashMap<>();
+        response.put("fileId", fileId);
+        response.put("fileName", file.getOriginalFilename());
+        response.put("message", "CSV file uploaded successfully");
+        response.put("status", "success");
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Execute a recommendation job synchronously and return the generated Excel report path.
      */
     @PostMapping("/execute/{fileId}")
     public ResponseEntity<Map<String, Object>> executeTests(@PathVariable String fileId) {
-        Map<String, Object> response = new HashMap<>();
+        log.info("Received synchronous execution request for fileId={}", fileId);
 
-        try {
-            System.out.println("Received execute request for fileId: " + fileId);
-            
-            // Execute tests synchronously (this will block until tests complete)
-            String resultFilePath = testExecutionService.executeTests(fileId);
-
-            response.put("status", "completed");
-            response.put("fileId", fileId);
-            response.put("resultFilePath", resultFilePath);
-            response.put("message", "Tests executed successfully. Excel report generated.");
-
-            return ResponseEntity.ok(response);
-            
-        } catch (Exception e) {
-            response.put("status", "failed");
-            response.put("error", e.getMessage());
-            response.put("fileId", fileId);
-            
-            System.err.println("Error executing tests: " + e.getMessage());
-            e.printStackTrace();
-            
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
-        }
+        String resultFilePath = testExecutionService.executeTests(fileId);
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("status", "completed");
+        response.put("fileId", fileId);
+        response.put("resultFilePath", resultFilePath);
+        response.put("message", "Execution completed successfully. Excel report generated.");
+        return ResponseEntity.ok(response);
     }
 
     /**
-     * Execute tests asynchronously (optional alternative)
-     * 
-     * Endpoint: POST /api/tests/execute-async/{fileId}
-     * Response: { "status": "running", "fileId": "...", "message": "..." }
-     * 
-     * Use this if you want to start tests in background and poll for status
+     * Execute a recommendation job asynchronously and poll its status later.
      */
     @PostMapping("/execute-async/{fileId}")
     public ResponseEntity<Map<String, Object>> executeTestsAsync(@PathVariable String fileId) {
-        Map<String, Object> response = new HashMap<>();
+        log.info("Received asynchronous execution request for fileId={}", fileId);
 
-        try {
-            System.out.println("Received async execute request for fileId: " + fileId);
-            
-            // Execute tests asynchronously (returns immediately)
-            testExecutionService.executeTestsAsync(fileId);
+        testExecutionService.executeTestsAsync(fileId);
 
-            response.put("status", "running");
-            response.put("fileId", fileId);
-            response.put("message", "Tests execution started. Use /status endpoint to check progress.");
-
-            return ResponseEntity.ok(response);
-            
-        } catch (Exception e) {
-            response.put("status", "failed");
-            response.put("error", e.getMessage());
-            response.put("fileId", fileId);
-            
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
-        }
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("status", "running");
+        response.put("fileId", fileId);
+        response.put("message", "Execution started. Use the status endpoint to check progress.");
+        return ResponseEntity.ok(response);
     }
 
     /**
-     * Download the generated Excel report
-     * 
-     * Endpoint: GET /api/tests/download/{fileId}
-     * Response: Excel file download
+     * Download the generated Excel report.
      */
     @GetMapping("/download/{fileId}")
-    public ResponseEntity<Resource> downloadResultFile(@PathVariable String fileId) {
-        try {
-            System.out.println("Download request for fileId: " + fileId);
-            
-            Path filePath = testExecutionService.getResultFilePath(fileId);
-            Resource resource = new UrlResource(filePath.toUri());
+    public ResponseEntity<Resource> downloadResultFile(@PathVariable String fileId) throws IOException {
+        log.info("Received download request for fileId={}", fileId);
 
-            if (resource.exists() && resource.isReadable()) {
-                String filename = filePath.getFileName().toString();
-                
-                System.out.println("Serving file: " + filename + " from path: " + filePath.toAbsolutePath());
-                
-                // Use proper Excel MIME type
-                return ResponseEntity.ok()
-                    .contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
-                    .contentLength(resource.contentLength())
-                    .header(HttpHeaders.CONTENT_DISPOSITION,
-                        "attachment; filename=\"" + filename + "\"")
-                    .header(HttpHeaders.ACCESS_CONTROL_EXPOSE_HEADERS, HttpHeaders.CONTENT_DISPOSITION)
-                    .body(resource);
-            } else {
-                System.err.println("File not found or not readable: " + filePath);
-                return ResponseEntity.notFound().build();
-            }
-            
-        } catch (Exception e) {
-            System.err.println("Error downloading file: " + e.getMessage());
-            e.printStackTrace();
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        Path filePath = testExecutionService.getResultFilePath(fileId);
+        Resource resource = new UrlResource(filePath.toUri());
+
+        if (!resource.exists() || !resource.isReadable()) {
+            throw new NoSuchFileException(filePath.toString());
         }
+
+        String filename = filePath.getFileName().toString();
+        return ResponseEntity.ok()
+            .contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+            .contentLength(resource.contentLength())
+            .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
+            .header(HttpHeaders.ACCESS_CONTROL_EXPOSE_HEADERS, HttpHeaders.CONTENT_DISPOSITION)
+            .body(resource);
     }
 
     /**
-     * Get test execution status
-     * 
-     * Endpoint: GET /api/tests/status/{fileId}
-     * Response: { "status": "running|completed|failed", ... }
+     * Get recommendation job status.
      */
     @GetMapping("/status/{fileId}")
     public ResponseEntity<Map<String, Object>> getTestStatus(@PathVariable String fileId) {
-        try {
-            Map<String, Object> status = testExecutionService.getExecutionStatus(fileId);
-            return ResponseEntity.ok(status);
-            
-        } catch (Exception e) {
-            Map<String, Object> response = new HashMap<>();
-            response.put("error", e.getMessage());
-            response.put("status", "error");
-            
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
-        }
+        return ResponseEntity.ok(testExecutionService.getExecutionStatus(fileId));
     }
 
     /**
-     * Health check endpoint
-     * 
-     * Endpoint: GET /api/tests/health
-     * Response: { "status": "ok", "message": "..." }
+     * Health check endpoint.
      */
     @GetMapping("/health")
     public ResponseEntity<Map<String, String>> healthCheck() {
-        Map<String, String> response = new HashMap<>();
+        Map<String, String> response = new LinkedHashMap<>();
         response.put("status", "ok");
-        response.put("message", "Test automation service is running");
-        response.put("timestamp", String.valueOf(System.currentTimeMillis()));
-        
+        response.put("message", "Recommendation service is running");
+        response.put("storageRoot", testExecutionService.getStorageRoot().toString());
+        response.put("storageWritable", Boolean.toString(Files.isWritable(testExecutionService.getStorageRoot())));
         return ResponseEntity.ok(response);
     }
     
     /**
-     * Delete files for a specific fileId
-     * 
-     * Endpoint: DELETE /api/tests/cleanup/{fileId}
-     * Response: { "status": "success", "deletedFiles": [...], "deletedCount": n }
+     * Delete generated files for a specific fileId.
      */
     @DeleteMapping("/cleanup/{fileId}")
     public ResponseEntity<Map<String, Object>> cleanupFiles(@PathVariable String fileId) {
-        try {
-            System.out.println("Cleanup request for fileId: " + fileId);
-            
-            Map<String, Object> result = testExecutionService.deleteFilesForId(fileId);
-            
-            return ResponseEntity.ok(result);
-            
-        } catch (Exception e) {
-            Map<String, Object> response = new HashMap<>();
-            response.put("status", "error");
-            response.put("error", e.getMessage());
-            
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
-        }
+        log.info("Received cleanup request for fileId={}", fileId);
+        return ResponseEntity.ok(testExecutionService.deleteFilesForId(fileId));
     }
     
     /**
-     * Delete all generated Excel reports
-     * 
-     * Endpoint: DELETE /api/tests/cleanup/reports/all
-     * Response: { "status": "success", "deletedFiles": [...], "deletedCount": n }
+     * Delete all generated Excel reports.
      */
     @DeleteMapping("/cleanup/reports/all")
     public ResponseEntity<Map<String, Object>> cleanupAllReports() {
-        try {
-            System.out.println("Cleanup all reports request");
-            
-            Map<String, Object> result = testExecutionService.deleteAllGeneratedReports();
-            
-            return ResponseEntity.ok(result);
-            
-        } catch (Exception e) {
-            Map<String, Object> response = new HashMap<>();
-            response.put("status", "error");
-            response.put("error", e.getMessage());
-            
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
-        }
+        log.info("Received cleanup request for all reports");
+        return ResponseEntity.ok(testExecutionService.deleteAllGeneratedReports());
     }
     
     /**
-     * Delete all backup CSV files
-     * 
-     * Endpoint: DELETE /api/tests/cleanup/backups/all
-     * Response: { "status": "success", "deletedFiles": [...], "deletedCount": n }
+     * Legacy endpoint retained for compatibility.
      */
     @DeleteMapping("/cleanup/backups/all")
     public ResponseEntity<Map<String, Object>> cleanupAllBackups() {
-        try {
-            System.out.println("Cleanup all backups request");
-            
-            Map<String, Object> result = testExecutionService.deleteAllBackups();
-            
-            return ResponseEntity.ok(result);
-            
-        } catch (Exception e) {
-            Map<String, Object> response = new HashMap<>();
-            response.put("status", "error");
-            response.put("error", e.getMessage());
-            
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
-        }
+        log.info("Received cleanup request for legacy backups");
+        return ResponseEntity.ok(testExecutionService.deleteAllBackups());
     }
     
     /**
-     * Complete cleanup - delete all files (reports + backups)
-     * 
-     * Endpoint: DELETE /api/tests/cleanup/all
-     * Response: { "status": "success", "deletedFiles": [...], "deletedCount": n }
+     * Delete all generated uploads and reports.
      */
     @DeleteMapping("/cleanup/all")
     public ResponseEntity<Map<String, Object>> cleanupAll() {
-        try {
-            System.out.println("Complete cleanup request - deleting all files");
-            
-            Map<String, Object> result = testExecutionService.cleanupAll();
-            
-            return ResponseEntity.ok(result);
-            
-        } catch (Exception e) {
-            Map<String, Object> response = new HashMap<>();
-            response.put("status", "error");
-            response.put("error", e.getMessage());
-            
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
-        }
+        log.info("Received cleanup request for all generated data");
+        return ResponseEntity.ok(testExecutionService.cleanupAll());
     }
 }

@@ -18,7 +18,7 @@ public class InventoryExcelGenerator {
     static {
         COLOR_NAMES.put("1104", "Oxford Grey");
         COLOR_NAMES.put("1244", "Brazilian Mahogany");
-        COLOR_NAMES.put("1239", "Coffee Brown");
+        COLOR_NAMES.put("1239/1229", "Coffee Brown");
         COLOR_NAMES.put("3132", "Coastal Grey");
         COLOR_NAMES.put("3221", "Mahogany");
         COLOR_NAMES.put("3218", "Mayan Brown");
@@ -34,82 +34,77 @@ public class InventoryExcelGenerator {
         InventoryResponseOrganizer.DimensionInfo dimInfo,
         String outputFilePath
     ) {
+        Workbook workbook = null;
         try {
-            Workbook workbook;
             Sheet sheet;
             int lastRowNum = 0;
-            int dataStartRow = 31; // Row where data table begins (after info section)
+            int dataStartRow = 31;
             File file = new File(outputFilePath);
-            
-            // Load existing workbook or create new one
+
             if (file.exists()) {
-                FileInputStream fis = new FileInputStream(file);
-                workbook = new XSSFWorkbook(fis);
+                try (FileInputStream fis = new FileInputStream(file)) {
+                    workbook = new XSSFWorkbook(fis);
+                }
                 sheet = workbook.getSheetAt(0);
                 lastRowNum = sheet.getLastRowNum();
-                fis.close();
             } else {
                 workbook = new XSSFWorkbook();
                 sheet = workbook.createSheet("Inventory");
                 createHeaderRow(workbook, sheet);
-                lastRowNum = dataStartRow; // Start from data table header row
+                lastRowNum = dataStartRow;
             }
-            
-            // Create new data row
+
             Row dataRow = sheet.createRow(lastRowNum + 1);
-            
-            // Create cell styles for different statuses
+
             CellStyle instockStyle = createInstockStyle(workbook);
             CellStyle inboundStyle = createInboundStyle(workbook);
             CellStyle customStyle = createCustomStyle(workbook);
             CellStyle dimensionStyle = createDimensionStyle(workbook);
-            
-            // Add dimension cells (convert DimA and DimB to numeric, keep DimC original)
+
             Cell dimACell = dataRow.createCell(0);
             dimACell.setCellValue(dimensionToNumericString(dimInfo.dimA));
             dimACell.setCellStyle(dimensionStyle);
-            
+
             Cell dimBCell = dataRow.createCell(1);
             dimBCell.setCellValue(dimensionToNumericString(dimInfo.dimB));
             dimBCell.setCellStyle(dimensionStyle);
-            
+
             Cell dimCCell = dataRow.createCell(2);
             dimCCell.setCellValue(dimInfo.dimC);
             dimCCell.setCellStyle(dimensionStyle);
-            
-            // Add SKU cells with color coding (keep original format - no conversion)
+
             int colIndex = 3;
             for (String colorCode : COLOR_CODES) {
                 Cell cell = dataRow.createCell(colIndex++);
                 InventoryResponseOrganizer.SkuWithSource skuWithSource = selectedSkus.get(colorCode);
-                
+
                 if (skuWithSource == null) {
                     cell.setCellValue("custom");
                     cell.setCellStyle(customStyle);
+                    continue;
+                }
+
+                cell.setCellValue(skuWithSource.sku);
+                if (skuWithSource.source.equals("inventory")) {
+                    cell.setCellStyle(instockStyle);
                 } else {
-                    // Keep original SKU format
-                    String sku = skuWithSource.sku;
-                    cell.setCellValue(sku);
-                    
-                    if (skuWithSource.source.equals("inventory")) {
-                        cell.setCellStyle(instockStyle);
-                    } else {
-                        cell.setCellStyle(inboundStyle);
-                    }
+                    cell.setCellStyle(inboundStyle);
                 }
             }
-            
-            // Save workbook
-            FileOutputStream fos = new FileOutputStream(outputFilePath);
-            workbook.write(fos);
-            fos.close();
-            workbook.close();
-            
-            System.out.println("✓ Excel row added to: " + outputFilePath);
-            
+
+            try (FileOutputStream fos = new FileOutputStream(outputFilePath)) {
+                workbook.write(fos);
+            }
         } catch (IOException e) {
-            System.err.println("Error writing Excel file: " + e.getMessage());
-            e.printStackTrace();
+            throw new IllegalStateException("Error writing Excel file: " + outputFilePath, e);
+        } finally {
+            if (workbook != null) {
+                try {
+                    workbook.close();
+                } catch (IOException e) {
+                    throw new IllegalStateException("Error closing Excel workbook: " + outputFilePath, e);
+                }
+            }
         }
     }
     
@@ -248,7 +243,7 @@ public class InventoryExcelGenerator {
         Map<String, String> colorCodes = new LinkedHashMap<>();
         colorCodes.put("1104", "Oxford Grey");
         colorCodes.put("1244", "Brazilian Mahogany");
-        colorCodes.put("1239", "Coffee Brown");
+        colorCodes.put("1239/1229", "Coffee Brown");
         colorCodes.put("3132", "Coastal Grey");
         colorCodes.put("3221", "Mahogany");
         colorCodes.put("3218", "Mayan Brown");

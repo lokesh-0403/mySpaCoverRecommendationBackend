@@ -12,11 +12,21 @@ import zasyaSolutions.mySpaCoverSkuRecommendation.model.SpaCoverDimension;
  */
 public class FallbackDimensionGenerator {
 
+    public static boolean isCircleDimension(SpaCoverDimension dimension) {
+        return dimension != null
+            && dimension.getDimensionB() == 360
+            && dimension.getDimensionC() == 0;
+    }
+
     /**
      * Generate fallbacks for standard 3-dimension case (DimA, DimB, DimC all vary)
      * Original logic from commented code - for the first test case
      */
     public static List<SpaCoverDimension> generateFallbacks(SpaCoverDimension original) {
+        if (isCircleDimension(original)) {
+            return generateCircleFallbacks(original);
+        }
+
         List<SpaCoverDimension> fallbackAttempts = new ArrayList<>();
 
         int altDimA = original.getDimensionA();
@@ -35,33 +45,27 @@ public class FallbackDimensionGenerator {
 
     /**
      * Generate fallbacks for 2-dimension case with STATIC second dimension (360)
-     * Only first dimension varies with +1/-1 logic
-     * Second dimension remains constant at 360
-     * 
-     * Example: If input is DimA=88, DimB=360, DimC=0
-     * - Original: 88-360
-     * - +1: 89-360
-     * - -1: 87-360
+     * Only the first dimension varies and circle rows normalize to the 360 SKU structure.
+     * Fallback order: -1, 0, +1, +2
      */
     public static List<SpaCoverDimension> generateFallbacksForStaticSecondDimension(SpaCoverDimension original) {
+        return generateCircleFallbacks(original);
+    }
+
+    public static List<SpaCoverDimension> generateCircleFallbacks(SpaCoverDimension original) {
         List<SpaCoverDimension> fallbacks = new ArrayList<>();
 
         int dimA = original.getDimensionA();
-        int dimB = original.getDimensionB(); // This should be 360 and remains static
-        int dimC = original.getDimensionC(); // Should be 0 for static 360 case
+        int dimB = original.getDimensionB();
+        int dimC = original.getDimensionC();
+        int[] offsets = {-1, 0, 1, 2};
 
-        // Add original first
-        fallbacks.add(original);
-
-        // Only vary the first dimension (DimA) with +1 and -1
-        // DimB (360) remains constant
-        // DimC remains at 0
-        fallbacks.add(new SpaCoverDimension(dimA + 1, dimB, dimC)); // +1
-        fallbacks.add(new SpaCoverDimension(dimA - 1, dimB, dimC)); // -1
-
-        System.out.println("  Generated fallbacks for static 360 case:");
-        for (SpaCoverDimension fb : fallbacks) {
-            System.out.println("    - " + fb.getDimensionA() + "-" + fb.getDimensionB());
+        for (int offset : offsets) {
+            int newA = dimA + offset;
+            if (newA <= 0) {
+                continue;
+            }
+            fallbacks.add(new SpaCoverDimension(newA, dimB, dimC));
         }
 
         return fallbacks;

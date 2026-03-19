@@ -1,0 +1,11 @@
+.git
+.gitignore
+.m2
+target
+test-output
+results
+uploads
+data
+inventory_report_*.csv
+inventory_report_*.xlsx
+.DS_Store

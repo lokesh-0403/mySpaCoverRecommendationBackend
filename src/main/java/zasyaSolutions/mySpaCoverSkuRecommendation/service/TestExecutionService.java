@@ -1,521 +1,457 @@
 package zasyaSolutions.mySpaCoverSkuRecommendation.service;
 
-import org.springframework.stereotype.Service;
-import org.springframework.web.multipart.MultipartFile;
-import org.testng.TestNG;
-import org.testng.xml.XmlClass;
-import org.testng.xml.XmlSuite;
-import org.testng.xml.XmlTest;
-import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
-import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.stream.Stream;
+
+import jakarta.annotation.PreDestroy;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
+import org.springframework.web.multipart.MultipartFile;
+
+import zasyaSolutions.mySpaCoverSkuRecommendation.config.AppProperties;
+import zasyaSolutions.mySpaCoverSkuRecommendation.exception.BadRequestException;
+import zasyaSolutions.mySpaCoverSkuRecommendation.exception.ConflictException;
+import zasyaSolutions.mySpaCoverSkuRecommendation.exception.NotFoundException;
+import zasyaSolutions.mySpaCoverSkuRecommendation.utils.CsvDimensionReader;
+import zasyaSolutions.mySpaCoverSkuRecommendation.utils.InventoryResponseOrganizer;
+import zasyaSolutions.mySpaCoverSkuRecommendation.utils.PayloadGenerator;
 
 @Service
 public class TestExecutionService {
 
-    // Target CSV file that will be replaced
-    private static final String TARGET_CSV_PATH = "/Users/yeshsharma/Desktop/mySpaCoverSkuRecommendation/src/main/resources/testdata/spa_cover_dimensions.csv";
-    
-    // Directory where test results (Excel files) are generated
-    private static final String RESULTS_BASE_DIR = "/Users/yeshsharma/Desktop/mySpaCoverSkuRecommendation/";
-    
-    // Track execution status
-    private Map<String, Map<String, Object>> executionStatusMap = new ConcurrentHashMap<>();
-    
-    // Track result file paths
-    private Map<String, String> resultFileMap = new ConcurrentHashMap<>();
+    private static final Logger log = LoggerFactory.getLogger(TestExecutionService.class);
+    private static final String REPORT_FILENAME_PREFIX = "inventory_report_";
 
-    public TestExecutionService() {
-        try {
-            System.out.println("WORKING DIRECTORY = " + System.getProperty("user.dir"));
-            
-            // Ensure target directory exists
-            Path targetDir = Paths.get(TARGET_CSV_PATH).getParent();
-            if (!Files.exists(targetDir)) {
-                Files.createDirectories(targetDir);
-                System.out.println("Created target directory: " + targetDir);
-            }
-            
-            System.out.println("TestExecutionService initialized successfully");
-        } catch (IOException e) {
-            throw new RuntimeException("Failed to initialize TestExecutionService", e);
-        }
+    private final InventoryApiService inventoryApiService;
+    private final Path storageRoot;
+    private final Path uploadsRoot;
+    private final Path resultsRoot;
+    private final ExecutorService executorService;
+    private final ConcurrentMap<String, ExecutionRecord> executionRecords = new ConcurrentHashMap<>();
+
+    public TestExecutionService(AppProperties appProperties, InventoryApiService inventoryApiService) {
+        this.inventoryApiService = inventoryApiService;
+        this.storageRoot = appProperties.getStorageRootPath();
+        this.uploadsRoot = appProperties.getUploadsRootPath();
+        this.resultsRoot = appProperties.getResultsRootPath();
+        this.executorService = Executors.newFixedThreadPool(Math.max(1, appProperties.getExecution().getMaxParallelJobs()));
+
+        createDirectoryIfMissing(storageRoot);
+        createDirectoryIfMissing(uploadsRoot);
+        createDirectoryIfMissing(resultsRoot);
     }
 
-    /**
-     * Replace the target CSV file with the uploaded file
-     */
-    public String replaceTargetCsvFile(MultipartFile file) throws IOException {
-        if (file.isEmpty()) {
-            throw new IOException("Uploaded file is empty");
-        }
-        
-        // Validate file type
-        String originalFilename = file.getOriginalFilename();
-        if (originalFilename == null || !originalFilename.toLowerCase().endsWith(".csv")) {
-            throw new IOException("Only CSV files are allowed");
-        }
-        
-        // Generate a unique file ID for tracking
+    public Path getStorageRoot() {
+        return storageRoot;
+    }
+
+    public String storeUploadedCsv(MultipartFile file) throws IOException {
+        validateCsvUpload(file);
+
         String fileId = UUID.randomUUID().toString();
-        
+        String originalFilename = sanitizeFilename(Objects.requireNonNullElse(file.getOriginalFilename(), "dimensions.csv"));
+        Path uploadDirectory = uploadsRoot.resolve(fileId);
+        Files.createDirectories(uploadDirectory);
+
+        Path uploadedFilePath = uploadDirectory.resolve(originalFilename);
+        Files.copy(file.getInputStream(), uploadedFilePath, StandardCopyOption.REPLACE_EXISTING);
+
         try {
-            // Create backup of existing file (optional)
-            Path targetPath = Paths.get(TARGET_CSV_PATH);
-            if (Files.exists(targetPath)) {
-                Path backupPath = Paths.get(TARGET_CSV_PATH + ".backup_" + System.currentTimeMillis());
-                Files.copy(targetPath, backupPath, StandardCopyOption.REPLACE_EXISTING);
-                System.out.println("Created backup: " + backupPath);
+            if (CsvDimensionReader.readDimensions(uploadedFilePath).isEmpty()) {
+                throw new BadRequestException("Uploaded CSV does not contain any dimension rows");
             }
-            
-            // Replace the target CSV file
-            Files.copy(file.getInputStream(), targetPath, StandardCopyOption.REPLACE_EXISTING);
-            System.out.println("Replaced target CSV file: " + TARGET_CSV_PATH);
-            
-            // Initialize status
-            Map<String, Object> status = new HashMap<>();
-            status.put("status", "uploaded");
-            status.put("uploadTime", new Date());
-            status.put("fileName", originalFilename);
-            executionStatusMap.put(fileId, status);
-            
-            return fileId;
-            
-        } catch (IOException e) {
-            throw new IOException("Failed to replace CSV file: " + e.getMessage(), e);
+        } catch (RuntimeException exception) {
+            Files.deleteIfExists(uploadedFilePath);
+            deleteDirectory(uploadDirectory);
+            throw exception;
         }
+
+        ExecutionRecord record = new ExecutionRecord(fileId, originalFilename, uploadedFilePath);
+        record.status = "uploaded";
+        record.uploadTime = Instant.now();
+        executionRecords.put(fileId, record);
+
+        log.info("Stored upload for fileId={} at {}", fileId, uploadedFilePath);
+        return fileId;
     }
 
-    /**
-     * Execute TestNG tests asynchronously
-     */
     public CompletableFuture<String> executeTestsAsync(String fileId) {
-        // Update status to running
-        Map<String, Object> status = executionStatusMap.getOrDefault(fileId, new HashMap<>());
-        status.put("status", "running");
-        status.put("startTime", new Date());
-        executionStatusMap.put(fileId, status);
-        
+        ExecutionRecord record = getOrLoadRecord(fileId);
+        markRunning(record);
+
         return CompletableFuture.supplyAsync(() -> {
             try {
-                // Run TestNG tests
-                runTestNGTests(fileId);
-                
-                // Find the generated Excel report
-                String resultFilePath = findLatestExcelReport();
-                
-                if (resultFilePath == null) {
-                    throw new RuntimeException("No Excel report generated");
-                }
-                
-                // Store the result file path
-                resultFileMap.put(fileId, resultFilePath);
-                
-                // Update status
-                Map<String, Object> completedStatus = new HashMap<>();
-                completedStatus.put("status", "completed");
-                completedStatus.put("endTime", new Date());
-                completedStatus.put("resultFilePath", resultFilePath);
-                executionStatusMap.put(fileId, completedStatus);
-                
-                System.out.println("Tests completed successfully. Result file: " + resultFilePath);
-                return resultFilePath;
-                
-            } catch (Exception e) {
-                Map<String, Object> errorStatus = new HashMap<>();
-                errorStatus.put("status", "failed");
-                errorStatus.put("error", e.getMessage());
-                errorStatus.put("endTime", new Date());
-                executionStatusMap.put(fileId, errorStatus);
-                
-                System.err.println("Test execution failed: " + e.getMessage());
-                e.printStackTrace();
-                throw new RuntimeException("Test execution failed: " + e.getMessage(), e);
+                return executeInternal(record);
+            } catch (RuntimeException exception) {
+                markFailed(record, exception);
+                throw exception;
+            }
+        }, executorService);
+    }
+
+    public String executeTests(String fileId) {
+        ExecutionRecord record = getOrLoadRecord(fileId);
+        markRunning(record);
+
+        try {
+            return executeInternal(record);
+        } catch (RuntimeException exception) {
+            markFailed(record, exception);
+            throw exception;
+        }
+    }
+
+    public Path getResultFilePath(String fileId) {
+        ExecutionRecord record = getOrLoadRecord(fileId);
+        Path resultPath = record.excelReportPath != null ? record.excelReportPath : defaultExcelReportPath(fileId);
+
+        if (!Files.exists(resultPath)) {
+            throw new NotFoundException("Result file not found for fileId: " + fileId);
+        }
+
+        return resultPath;
+    }
+
+    public Map<String, Object> getExecutionStatus(String fileId) {
+        ExecutionRecord record = getOrLoadRecord(fileId);
+        return record.toResponse();
+    }
+
+    public Map<String, Object> deleteFilesForId(String fileId) {
+        ExecutionRecord record = getOrLoadRecord(fileId);
+
+        List<String> deletedFiles = new ArrayList<>();
+        deleteTrackedPath(record.excelReportPath, deletedFiles);
+        deleteTrackedPath(record.csvReportPath, deletedFiles);
+
+        deleteDirectory(resultsRoot.resolve(fileId), deletedFiles);
+        deleteTrackedPath(record.uploadFilePath, deletedFiles);
+        deleteDirectory(uploadsRoot.resolve(fileId), deletedFiles);
+
+        executionRecords.remove(fileId);
+
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("status", "success");
+        response.put("deletedFiles", deletedFiles);
+        response.put("deletedCount", deletedFiles.size());
+        response.put("message", "Cleaned up generated files for fileId: " + fileId);
+        return response;
+    }
+
+    public Map<String, Object> deleteAllGeneratedReports() {
+        List<String> deletedFiles = new ArrayList<>();
+        deleteDirectoryContents(resultsRoot, deletedFiles);
+
+        executionRecords.values().forEach(record -> {
+            record.csvReportPath = null;
+            record.excelReportPath = null;
+            if (!"uploaded".equals(record.status)) {
+                record.status = "uploaded";
+                record.endTime = null;
+                record.error = null;
             }
         });
+
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("status", "success");
+        response.put("deletedFiles", deletedFiles);
+        response.put("deletedCount", deletedFiles.size());
+        response.put("message", "Deleted all generated reports");
+        return response;
     }
 
-    /**
-     * Execute TestNG tests synchronously (blocking)
-     */
-    public String executeTests(String fileId) throws Exception {
-        // Update status to running
-        Map<String, Object> status = executionStatusMap.getOrDefault(fileId, new HashMap<>());
-        status.put("status", "running");
-        status.put("startTime", new Date());
-        executionStatusMap.put(fileId, status);
-        
-        try {
-            // Run TestNG tests
-            runTestNGTests(fileId);
-            
-            // Find the generated Excel report
-            String resultFilePath = findLatestExcelReport();
-            
-            if (resultFilePath == null) {
-                throw new RuntimeException("No Excel report generated");
-            }
-            
-            // Store the result file path
-            resultFileMap.put(fileId, resultFilePath);
-            
-            // Update status
-            Map<String, Object> completedStatus = new HashMap<>();
-            completedStatus.put("status", "completed");
-            completedStatus.put("endTime", new Date());
-            completedStatus.put("resultFilePath", resultFilePath);
-            executionStatusMap.put(fileId, completedStatus);
-            
-            System.out.println("Tests completed successfully. Result file: " + resultFilePath);
-            return resultFilePath;
-            
-        } catch (Exception e) {
-            Map<String, Object> errorStatus = new HashMap<>();
-            errorStatus.put("status", "failed");
-            errorStatus.put("error", e.getMessage());
-            errorStatus.put("endTime", new Date());
-            executionStatusMap.put(fileId, errorStatus);
-            
-            System.err.println("Test execution failed: " + e.getMessage());
-            e.printStackTrace();
-            throw new Exception("Test execution failed: " + e.getMessage(), e);
-        }
-    }
-
-    /**
-     * Run TestNG tests programmatically
-     */
-    private void runTestNGTests(String fileId) {
-        System.out.println("Starting TestNG execution for fileId: " + fileId);
-        
-        // Create TestNG suite programmatically
-        XmlSuite suite = new XmlSuite();
-        suite.setName("Spa Cover Inventory API Test Suite");
-        
-        XmlTest test = new XmlTest(suite);
-        test.setName("Inventory API Tests");
-        
-        // Add the test class
-        List<XmlClass> classes = new ArrayList<>();
-        classes.add(new XmlClass("zasyaSolutions.mySpaCoverSkuRecommendation.tests.SpaCoverInventoryAPITest"));
-        test.setXmlClasses(classes);
-        
-        // Create TestNG instance and run
-        TestNG testng = new TestNG();
-        testng.setVerbose(2); // Set verbose level
-        
-        List<XmlSuite> suites = new ArrayList<>();
-        suites.add(suite);
-        testng.setXmlSuites(suites);
-        
-        // Run the tests
-        System.out.println("Executing TestNG suite...");
-        testng.run();
-        
-        System.out.println("TestNG execution completed");
-    }
-
-    /**
-     * Find the latest generated Excel report
-     */
-    private String findLatestExcelReport() {
-        File baseDir = new File(RESULTS_BASE_DIR);
-        
-        // Look for Excel files matching the pattern: inventory_report_combined_*.xlsx
-        File[] excelFiles = baseDir.listFiles((dir, name) -> 
-            name.startsWith("inventory_report_") && name.endsWith(".xlsx")
-        );
-        
-        if (excelFiles == null || excelFiles.length == 0) {
-            System.out.println("No Excel report found in directory: " + RESULTS_BASE_DIR);
-            return null;
-        }
-        
-        // Find the most recently modified file
-        File latestFile = null;
-        long latestModified = 0;
-        
-        for (File file : excelFiles) {
-            if (file.lastModified() > latestModified) {
-                latestModified = file.lastModified();
-                latestFile = file;
-            }
-        }
-        
-        if (latestFile != null) {
-            System.out.println("Found latest Excel report: " + latestFile.getAbsolutePath());
-            return latestFile.getAbsolutePath();
-        }
-        
-        return null;
-    }
-
-    /**
-     * Get the result file path for a given fileId
-     */
-    public Path getResultFilePath(String fileId) throws IOException {
-        String filePath = resultFileMap.get(fileId);
-        
-        if (filePath == null) {
-            // Try to find the latest report as fallback
-            filePath = findLatestExcelReport();
-        }
-        
-        if (filePath == null) {
-            throw new IOException("Result file not found for ID: " + fileId);
-        }
-        
-        Path path = Paths.get(filePath);
-        if (!Files.exists(path)) {
-            throw new IOException("Result file does not exist: " + filePath);
-        }
-        
-        // Verify it's actually an Excel file
-        if (!filePath.toLowerCase().endsWith(".xlsx")) {
-            throw new IOException("Result file is not an Excel file: " + filePath);
-        }
-        
-        System.out.println("Returning result file path: " + path.toAbsolutePath());
-        return path;
-    }
-
-    /**
-     * Get execution status for a given fileId
-     */
-    public Map<String, Object> getExecutionStatus(String fileId) {
-        Map<String, Object> status = executionStatusMap.get(fileId);
-        if (status == null) {
-            Map<String, Object> notFound = new HashMap<>();
-            notFound.put("status", "not_found");
-            notFound.put("message", "No execution record found for this ID");
-            return notFound;
-        }
-        return new HashMap<>(status); // Return a copy to prevent external modification
-    }
-    
-    /**
-     * Clean up old backup files (optional maintenance method)
-     */
-    public void cleanupOldBackups(int daysToKeep) {
-        try {
-            Path targetDir = Paths.get(TARGET_CSV_PATH).getParent();
-            long cutoffTime = System.currentTimeMillis() - (daysToKeep * 24L * 60 * 60 * 1000);
-            
-            Files.list(targetDir)
-                .filter(path -> path.getFileName().toString().contains(".backup_"))
-                .filter(path -> {
-                    try {
-                        return Files.getLastModifiedTime(path).toMillis() < cutoffTime;
-                    } catch (IOException e) {
-                        return false;
-                    }
-                })
-                .forEach(path -> {
-                    try {
-                        Files.delete(path);
-                        System.out.println("Deleted old backup: " + path);
-                    } catch (IOException e) {
-                        System.err.println("Failed to delete backup: " + path);
-                    }
-                });
-        } catch (IOException e) {
-            System.err.println("Error during backup cleanup: " + e.getMessage());
-        }
-    }
-    
-    /**
-     * Delete all generated files for a specific fileId
-     * This includes backup CSV files and generated Excel reports
-     */
-    public Map<String, Object> deleteFilesForId(String fileId) {
-        Map<String, Object> result = new HashMap<>();
-        List<String> deletedFiles = new ArrayList<>();
-        List<String> errors = new ArrayList<>();
-        
-        try {
-            // 1. Delete the result Excel file if it exists
-            String resultFilePath = resultFileMap.get(fileId);
-            if (resultFilePath != null) {
-                Path resultPath = Paths.get(resultFilePath);
-                if (Files.exists(resultPath)) {
-                    try {
-                        Files.delete(resultPath);
-                        deletedFiles.add(resultFilePath);
-                        System.out.println("Deleted Excel report: " + resultFilePath);
-                    } catch (IOException e) {
-                        errors.add("Failed to delete Excel report: " + resultFilePath + " - " + e.getMessage());
-                        System.err.println("Failed to delete Excel report: " + resultFilePath);
-                    }
-                }
-                resultFileMap.remove(fileId);
-            }
-            
-            // 2. Remove execution status
-            executionStatusMap.remove(fileId);
-            
-            result.put("status", "success");
-            result.put("deletedFiles", deletedFiles);
-            result.put("deletedCount", deletedFiles.size());
-            if (!errors.isEmpty()) {
-                result.put("errors", errors);
-            }
-            result.put("message", "Cleaned up " + deletedFiles.size() + " file(s) for fileId: " + fileId);
-            
-        } catch (Exception e) {
-            result.put("status", "error");
-            result.put("error", e.getMessage());
-            result.put("deletedFiles", deletedFiles);
-            result.put("errors", errors);
-        }
-        
-        return result;
-    }
-    
-    /**
-     * Delete all generated Excel reports (cleanup all results)
-     */
-    public Map<String, Object> deleteAllGeneratedReports() {
-        Map<String, Object> result = new HashMap<>();
-        List<String> deletedFiles = new ArrayList<>();
-        List<String> errors = new ArrayList<>();
-        
-        try {
-            File baseDir = new File(RESULTS_BASE_DIR);
-            
-            // Find all Excel reports
-            File[] excelFiles = baseDir.listFiles((dir, name) -> 
-                name.startsWith("inventory_report_") && name.endsWith(".xlsx")
-            );
-            
-            if (excelFiles != null) {
-                for (File file : excelFiles) {
-                    try {
-                        String filePath = file.getAbsolutePath();
-                        Files.delete(file.toPath());
-                        deletedFiles.add(filePath);
-                        System.out.println("Deleted Excel report: " + filePath);
-                    } catch (IOException e) {
-                        errors.add("Failed to delete: " + file.getAbsolutePath() + " - " + e.getMessage());
-                        System.err.println("Failed to delete: " + file.getAbsolutePath());
-                    }
-                }
-            }
-            
-            // Clear all tracking maps
-            resultFileMap.clear();
-            executionStatusMap.clear();
-            
-            result.put("status", "success");
-            result.put("deletedFiles", deletedFiles);
-            result.put("deletedCount", deletedFiles.size());
-            if (!errors.isEmpty()) {
-                result.put("errors", errors);
-            }
-            result.put("message", "Cleaned up " + deletedFiles.size() + " Excel report(s)");
-            
-        } catch (Exception e) {
-            result.put("status", "error");
-            result.put("error", e.getMessage());
-            result.put("deletedFiles", deletedFiles);
-            result.put("errors", errors);
-        }
-        
-        return result;
-    }
-    
-    /**
-     * Delete all backup CSV files
-     */
     public Map<String, Object> deleteAllBackups() {
-        Map<String, Object> result = new HashMap<>();
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("status", "success");
+        response.put("deletedFiles", List.of());
+        response.put("deletedCount", 0);
+        response.put("message", "Legacy backup cleanup is no longer required because uploads are stored per fileId");
+        return response;
+    }
+
+    public Map<String, Object> cleanupAll() {
         List<String> deletedFiles = new ArrayList<>();
-        List<String> errors = new ArrayList<>();
-        
+        deleteDirectoryContents(resultsRoot, deletedFiles);
+        deleteDirectoryContents(uploadsRoot, deletedFiles);
+        executionRecords.clear();
+
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("status", "success");
+        response.put("deletedFiles", deletedFiles);
+        response.put("deletedCount", deletedFiles.size());
+        response.put("message", "Deleted all generated files and uploads");
+        return response;
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        executorService.shutdown();
+    }
+
+    private String executeInternal(ExecutionRecord record) {
+        ensureUploadExists(record);
+
+        List<List<String>> skuPayloads = PayloadGenerator.generatePayloads(record.uploadFilePath);
+        if (skuPayloads.isEmpty()) {
+            throw new BadRequestException("No payloads could be generated from the uploaded CSV");
+        }
+
+        Path resultDirectory = resultsRoot.resolve(record.fileId);
+        createDirectoryIfMissing(resultDirectory);
+
+        Path csvReportPath = defaultCsvReportPath(record.fileId);
+        Path excelReportPath = defaultExcelReportPath(record.fileId);
+        deleteIfExists(csvReportPath);
+        deleteIfExists(excelReportPath);
+
+        String authToken = inventoryApiService.login();
+        for (List<String> skuPayload : skuPayloads) {
+            String responseJson = inventoryApiService.searchInventory(skuPayload, authToken);
+            InventoryResponseOrganizer.processAndSaveInventory(responseJson, skuPayload, csvReportPath.toString());
+        }
+
+        if (!Files.exists(excelReportPath)) {
+            throw new IllegalStateException("Excel report was not generated for fileId: " + record.fileId);
+        }
+
+        synchronized (record) {
+            record.status = "completed";
+            record.endTime = Instant.now();
+            record.error = null;
+            record.csvReportPath = csvReportPath;
+            record.excelReportPath = excelReportPath;
+        }
+
+        log.info("Completed execution for fileId={} with report {}", record.fileId, excelReportPath);
+        return excelReportPath.toString();
+    }
+
+    private void markRunning(ExecutionRecord record) {
+        synchronized (record) {
+            if ("running".equals(record.status)) {
+                throw new ConflictException("Execution is already running for fileId: " + record.fileId);
+            }
+            record.status = "running";
+            record.startTime = Instant.now();
+            record.endTime = null;
+            record.error = null;
+            record.csvReportPath = null;
+            record.excelReportPath = null;
+        }
+    }
+
+    private void markFailed(ExecutionRecord record, RuntimeException exception) {
+        synchronized (record) {
+            record.status = "failed";
+            record.error = exception.getMessage();
+            record.endTime = Instant.now();
+        }
+        log.error("Execution failed for fileId={}", record.fileId, exception);
+    }
+
+    private ExecutionRecord getOrLoadRecord(String fileId) {
+        ExecutionRecord existingRecord = executionRecords.get(fileId);
+        if (existingRecord != null) {
+            return existingRecord;
+        }
+
+        Path uploadDirectory = uploadsRoot.resolve(fileId);
+        if (!Files.isDirectory(uploadDirectory)) {
+            throw new NotFoundException("No upload found for fileId: " + fileId);
+        }
+
+        try (Stream<Path> files = Files.list(uploadDirectory)) {
+            Path uploadedFile = files
+                .filter(Files::isRegularFile)
+                .filter(path -> path.getFileName().toString().toLowerCase().endsWith(".csv"))
+                .findFirst()
+                .orElseThrow(() -> new NotFoundException("Uploaded CSV not found for fileId: " + fileId));
+
+            ExecutionRecord restoredRecord = new ExecutionRecord(fileId, uploadedFile.getFileName().toString(), uploadedFile);
+            restoredRecord.status = Files.exists(defaultExcelReportPath(fileId)) ? "completed" : "uploaded";
+            restoredRecord.csvReportPath = Files.exists(defaultCsvReportPath(fileId)) ? defaultCsvReportPath(fileId) : null;
+            restoredRecord.excelReportPath = Files.exists(defaultExcelReportPath(fileId)) ? defaultExcelReportPath(fileId) : null;
+            executionRecords.putIfAbsent(fileId, restoredRecord);
+            return executionRecords.get(fileId);
+        } catch (IOException exception) {
+            throw new IllegalStateException("Failed to restore execution state for fileId: " + fileId, exception);
+        }
+    }
+
+    private void validateCsvUpload(MultipartFile file) {
+        if (file == null || file.isEmpty()) {
+            throw new BadRequestException("Uploaded file is empty");
+        }
+
+        String originalFilename = file.getOriginalFilename();
+        if (!StringUtils.hasText(originalFilename) || !originalFilename.toLowerCase().endsWith(".csv")) {
+            throw new BadRequestException("Only CSV files are allowed");
+        }
+    }
+
+    private void ensureUploadExists(ExecutionRecord record) {
+        if (!Files.exists(record.uploadFilePath)) {
+            throw new NotFoundException("Uploaded CSV not found for fileId: " + record.fileId);
+        }
+    }
+
+    private Path defaultCsvReportPath(String fileId) {
+        return resultsRoot.resolve(fileId).resolve(REPORT_FILENAME_PREFIX + fileId + ".csv");
+    }
+
+    private Path defaultExcelReportPath(String fileId) {
+        return resultsRoot.resolve(fileId).resolve(REPORT_FILENAME_PREFIX + fileId + ".xlsx");
+    }
+
+    private void createDirectoryIfMissing(Path directory) {
         try {
-            Path targetDir = Paths.get(TARGET_CSV_PATH).getParent();
-            
-            Files.list(targetDir)
-                .filter(path -> path.getFileName().toString().contains(".backup_"))
+            Files.createDirectories(directory);
+        } catch (IOException exception) {
+            throw new IllegalStateException("Failed to initialize storage directory: " + directory, exception);
+        }
+    }
+
+    private void deleteIfExists(Path path) {
+        try {
+            Files.deleteIfExists(path);
+        } catch (IOException exception) {
+            throw new IllegalStateException("Failed to delete existing file: " + path, exception);
+        }
+    }
+
+    private void deleteTrackedPath(Path path, List<String> deletedFiles) {
+        if (path == null) {
+            return;
+        }
+
+        try {
+            if (Files.deleteIfExists(path)) {
+                deletedFiles.add(path.toString());
+            }
+        } catch (IOException exception) {
+            throw new IllegalStateException("Failed to delete file: " + path, exception);
+        }
+    }
+
+    private void deleteDirectoryContents(Path directory, List<String> deletedFiles) {
+        if (!Files.isDirectory(directory)) {
+            return;
+        }
+
+        try (Stream<Path> paths = Files.walk(directory)) {
+            paths
+                .filter(path -> !path.equals(directory))
+                .sorted(Comparator.reverseOrder())
+                .forEach(path -> deletePath(path, deletedFiles));
+        } catch (IOException exception) {
+            throw new IllegalStateException("Failed to delete directory contents: " + directory, exception);
+        }
+    }
+
+    private void deleteDirectory(Path directory, List<String> deletedFiles) {
+        if (!Files.isDirectory(directory)) {
+            return;
+        }
+
+        try (Stream<Path> paths = Files.walk(directory)) {
+            paths
+                .sorted(Comparator.reverseOrder())
                 .forEach(path -> {
-                    try {
-                        Files.delete(path);
-                        deletedFiles.add(path.toString());
-                        System.out.println("Deleted backup: " + path);
-                    } catch (IOException e) {
-                        errors.add("Failed to delete backup: " + path + " - " + e.getMessage());
-                        System.err.println("Failed to delete backup: " + path);
+                    if (!path.equals(directory)) {
+                        deletePath(path, deletedFiles);
+                    } else {
+                        deletePath(path, null);
                     }
                 });
-            
-            result.put("status", "success");
-            result.put("deletedFiles", deletedFiles);
-            result.put("deletedCount", deletedFiles.size());
-            if (!errors.isEmpty()) {
-                result.put("errors", errors);
-            }
-            result.put("message", "Cleaned up " + deletedFiles.size() + " backup file(s)");
-            
-        } catch (Exception e) {
-            result.put("status", "error");
-            result.put("error", e.getMessage());
-            result.put("deletedFiles", deletedFiles);
-            result.put("errors", errors);
+        } catch (IOException exception) {
+            throw new IllegalStateException("Failed to delete directory: " + directory, exception);
         }
-        
-        return result;
     }
-    
-    /**
-     * Comprehensive cleanup - delete everything
-     * Includes: Excel reports, backup CSV files, and clears all tracking data
-     */
-    public Map<String, Object> cleanupAll() {
-        Map<String, Object> result = new HashMap<>();
-        List<String> deletedFiles = new ArrayList<>();
-        List<String> errors = new ArrayList<>();
-        
+
+    private void deleteDirectory(Path directory) {
+        deleteDirectory(directory, new ArrayList<>());
+    }
+
+    private void deletePath(Path path, List<String> deletedFiles) {
         try {
-            // 1. Delete all Excel reports
-            Map<String, Object> reportsResult = deleteAllGeneratedReports();
-            if (reportsResult.containsKey("deletedFiles")) {
-                deletedFiles.addAll((List<String>) reportsResult.get("deletedFiles"));
+            boolean wasDirectory = Files.isDirectory(path);
+            boolean deleted = Files.deleteIfExists(path);
+            if (deleted && deletedFiles != null && !wasDirectory) {
+                deletedFiles.add(path.toString());
             }
-            if (reportsResult.containsKey("errors")) {
-                errors.addAll((List<String>) reportsResult.get("errors"));
-            }
-            
-            // 2. Delete all backups
-            Map<String, Object> backupsResult = deleteAllBackups();
-            if (backupsResult.containsKey("deletedFiles")) {
-                deletedFiles.addAll((List<String>) backupsResult.get("deletedFiles"));
-            }
-            if (backupsResult.containsKey("errors")) {
-                errors.addAll((List<String>) backupsResult.get("errors"));
-            }
-            
-            result.put("status", "success");
-            result.put("deletedFiles", deletedFiles);
-            result.put("deletedCount", deletedFiles.size());
-            if (!errors.isEmpty()) {
-                result.put("errors", errors);
-            }
-            result.put("message", "Complete cleanup finished. Deleted " + deletedFiles.size() + " file(s)");
-            
-            System.out.println("Complete cleanup finished. Deleted " + deletedFiles.size() + " file(s)");
-            
-        } catch (Exception e) {
-            result.put("status", "error");
-            result.put("error", e.getMessage());
-            result.put("deletedFiles", deletedFiles);
-            result.put("errors", errors);
+        } catch (IOException exception) {
+            throw new IllegalStateException("Failed to delete path: " + path, exception);
         }
-        
-        return result;
+    }
+
+    private String sanitizeFilename(String originalFilename) {
+        String sanitized = originalFilename.replaceAll("[^A-Za-z0-9._-]", "_");
+        return StringUtils.hasText(sanitized) ? sanitized : "dimensions.csv";
+    }
+
+    private static final class ExecutionRecord {
+
+        private final String fileId;
+        private final String originalFileName;
+        private final Path uploadFilePath;
+        private volatile String status;
+        private volatile Instant uploadTime;
+        private volatile Instant startTime;
+        private volatile Instant endTime;
+        private volatile Path csvReportPath;
+        private volatile Path excelReportPath;
+        private volatile String error;
+
+        private ExecutionRecord(String fileId, String originalFileName, Path uploadFilePath) {
+            this.fileId = fileId;
+            this.originalFileName = originalFileName;
+            this.uploadFilePath = uploadFilePath;
+        }
+
+        private Map<String, Object> toResponse() {
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("fileId", fileId);
+            response.put("fileName", originalFileName);
+            response.put("status", status);
+            response.put("uploadPath", uploadFilePath.toString());
+            if (uploadTime != null) {
+                response.put("uploadTime", uploadTime.toString());
+            }
+            if (startTime != null) {
+                response.put("startTime", startTime.toString());
+            }
+            if (endTime != null) {
+                response.put("endTime", endTime.toString());
+            }
+            if (csvReportPath != null) {
+                response.put("csvReportPath", csvReportPath.toString());
+            }
+            if (excelReportPath != null) {
+                response.put("resultFilePath", excelReportPath.toString());
+            }
+            if (error != null) {
+                response.put("error", error);
+            }
+            return response;
+        }
     }
 }
