@@ -18,18 +18,13 @@ public class WebConfig implements WebMvcConfigurer {
 
     @Override
     public void addCorsMappings(CorsRegistry registry) {
-        List<String> configuredOrigins = appProperties.getCors()
-            .getAllowedOrigins()
-            .stream()
-            .filter(StringUtils::hasText)
-            .toList();
-
-        String[] allowedOrigins = configuredOrigins.isEmpty()
-            ? new String[] { "http://localhost:3000" }
-            : configuredOrigins.toArray(String[]::new);
 
         registry.addMapping("/**")
-            .allowedOrigins(allowedOrigins)
+            .allowedOrigins(
+                "https://staging-inventory.myspacover.com",
+                "https://inventory.myspacover.com",
+                "http://localhost:3000"
+            )
             .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
             .allowedHeaders("*")
             .allowCredentials(true)

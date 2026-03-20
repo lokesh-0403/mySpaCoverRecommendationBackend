@@ -1,6 +1,7 @@
 package zasyaSolutions.mySpaCoverSkuRecommendation.controller;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.UrlResource;
@@ -37,7 +38,7 @@ public class TestAutomationController {
      * Upload a CSV file for later execution.
      */
     @PostMapping("/upload")
-    public ResponseEntity<Map<String, String>> uploadFile(@RequestParam("file") MultipartFile file) throws IOException {
+    public ResponseEntity<Map<String, String>> uploadFile(@RequestParam("file") MultipartFile file) {
         String fileId = testExecutionService.storeUploadedCsv(file);
 
         Map<String, String> response = new LinkedHashMap<>();
@@ -117,10 +118,18 @@ public class TestAutomationController {
     @GetMapping("/health")
     public ResponseEntity<Map<String, String>> healthCheck() {
         Map<String, String> response = new LinkedHashMap<>();
+        Path storageRoot = testExecutionService.getStorageRoot();
+        Path uploadsRoot = testExecutionService.getUploadsRoot();
+        Path resultsRoot = testExecutionService.getResultsRoot();
         response.put("status", "ok");
         response.put("message", "Recommendation service is running");
-        response.put("storageRoot", testExecutionService.getStorageRoot().toString());
-        response.put("storageWritable", Boolean.toString(Files.isWritable(testExecutionService.getStorageRoot())));
+        response.put("workingDirectory", Path.of("").toAbsolutePath().normalize().toString());
+        response.put("storageRoot", storageRoot.toString());
+        response.put("storageWritable", Boolean.toString(Files.isWritable(storageRoot)));
+        response.put("uploadsRoot", uploadsRoot.toString());
+        response.put("uploadsWritable", Boolean.toString(Files.isWritable(uploadsRoot)));
+        response.put("resultsRoot", resultsRoot.toString());
+        response.put("resultsWritable", Boolean.toString(Files.isWritable(resultsRoot)));
         return ResponseEntity.ok(response);
     }
     

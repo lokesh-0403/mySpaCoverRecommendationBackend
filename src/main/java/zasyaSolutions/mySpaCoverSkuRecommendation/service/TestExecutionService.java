@@ -64,24 +64,38 @@ public class TestExecutionService {
         return storageRoot;
     }
 
-    public String storeUploadedCsv(MultipartFile file) throws IOException {
+    public Path getUploadsRoot() {
+        return uploadsRoot;
+    }
+
+    public Path getResultsRoot() {
+        return resultsRoot;
+    }
+
+    public String storeUploadedCsv(MultipartFile file) {
         validateCsvUpload(file);
+        ensureWritableDirectory(uploadsRoot, "upload storage");
 
         String fileId = UUID.randomUUID().toString();
         String originalFilename = sanitizeFilename(Objects.requireNonNullElse(file.getOriginalFilename(), "dimensions.csv"));
         Path uploadDirectory = uploadsRoot.resolve(fileId);
-        Files.createDirectories(uploadDirectory);
-
         Path uploadedFilePath = uploadDirectory.resolve(originalFilename);
-        Files.copy(file.getInputStream(), uploadedFilePath, StandardCopyOption.REPLACE_EXISTING);
 
         try {
+            Files.createDirectories(uploadDirectory);
+            Files.copy(file.getInputStream(), uploadedFilePath, StandardCopyOption.REPLACE_EXISTING);
+
             if (CsvDimensionReader.readDimensions(uploadedFilePath).isEmpty()) {
                 throw new BadRequestException("Uploaded CSV does not contain any dimension rows");
             }
+        } catch (IOException exception) {
+            cleanupFailedUpload(uploadDirectory, uploadedFilePath);
+            throw new IllegalStateException(
+                "Failed to store uploaded CSV at " + uploadedFilePath + ": " + exception.getMessage(),
+                exception
+            );
         } catch (RuntimeException exception) {
-            Files.deleteIfExists(uploadedFilePath);
-            deleteDirectory(uploadDirectory);
+            cleanupFailedUpload(uploadDirectory, uploadedFilePath);
             throw exception;
         }
 
@@ -330,6 +344,13 @@ public class TestExecutionService {
         }
     }
 
+    private void ensureWritableDirectory(Path directory, String description) {
+        createDirectoryIfMissing(directory);
+        if (!Files.isWritable(directory)) {
+            throw new IllegalStateException("Storage directory is not writable for " + description + ": " + directory);
+        }
+    }
+
     private void deleteIfExists(Path path) {
         try {
             Files.deleteIfExists(path);
@@ -389,6 +410,20 @@ public class TestExecutionService {
 
     private void deleteDirectory(Path directory) {
         deleteDirectory(directory, new ArrayList<>());
+    }
+
+    private void cleanupFailedUpload(Path uploadDirectory, Path uploadedFilePath) {
+        try {
+            Files.deleteIfExists(uploadedFilePath);
+        } catch (IOException cleanupException) {
+            log.warn("Failed to delete partial upload {}", uploadedFilePath, cleanupException);
+        }
+
+        try {
+            deleteDirectory(uploadDirectory);
+        } catch (RuntimeException cleanupException) {
+            log.warn("Failed to delete partial upload directory {}", uploadDirectory, cleanupException);
+        }
     }
 
     private void deletePath(Path path, List<String> deletedFiles) {
