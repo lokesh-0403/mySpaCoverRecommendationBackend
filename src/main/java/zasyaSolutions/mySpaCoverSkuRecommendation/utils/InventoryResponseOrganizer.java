@@ -385,11 +385,11 @@ public class InventoryResponseOrganizer {
                     writer.write("=== INVENTORY REPORT - SKU BREAKDOWN & COLOR CODING ===\n");
                     writer.write("\n");
                     writer.write("SKU FORMAT EXPLANATION:\n");
-                    writer.write("Example SKU: E4E4-55-M1-1104\n");
+                    writer.write("Example SKU: E4E4-55-M1-1104, E4-3605-M1-1104\n");
                     writer.write("  - First Part (E4E4): Dimensions A & B\n");
-                    writer.write("    * E4 = 84 inches (First Dimension)\n");
-                    writer.write("    * E4 = 84 inches (Second Dimension)\n");
-                    writer.write("  - Second Part (55): Third Dimension (5 inches)\n");
+                    writer.write("    * E4 = 84 inches (First Dimension)/ Diameter for the Circular Cover\n");
+                    writer.write("    * E4 = 84 inches (Second Dimension)/ Second Dimension is not Available for Circular Cover Sku's\n");
+                    writer.write("  - Second Part (55/3605): Third Dimension (5 inches) for Round Rectangle Cover/ Third Dimension (360 inches) for Circular Cover\n");
                     writer.write("  - Third Part (M1): Taper specification\n");
                     writer.write("  - Fourth Part (1104): Material/Color code\n");
                     writer.write("\n");
